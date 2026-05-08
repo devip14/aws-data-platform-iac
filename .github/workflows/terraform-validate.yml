@@ -1,0 +1,108 @@
+name: Terraform Validate & Plan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.x"
+
+      - name: Terraform Format Check
+        run: |
+          for dir in modules/*/; do
+            echo "Checking format in $dir"
+            terraform -chdir="$dir" fmt -check -recursive
+          done
+
+      - name: Validate EMR Module
+        run: |
+          cd modules/emr
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate S3 Module
+        run: |
+          cd modules/s3
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate IAM Module
+        run: |
+          cd modules/iam
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate Lambda Module
+        run: |
+          cd modules/lambda
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate CloudWatch Module
+        run: |
+          cd modules/cloudwatch
+          terraform init -backend=false
+          terraform validate
+
+  security-scan:
+    name: tfsec Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: true
+
+  localstack-test:
+    name: LocalStack Integration Test
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:3.4
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,iam,cloudwatch,kms,sns
+          AWS_DEFAULT_REGION: us-east-1
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install boto3
+
+      - name: Run S3 lifecycle audit against LocalStack
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          # Create a test bucket first
+          aws --endpoint-url=http://localhost:4566 s3 mb s3://test-audit-bucket
+          # Run the audit
+          python scripts/s3_lifecycle_audit.py \
+            --endpoint-url http://localhost:4566 \
+            --dry-run \
+            --json
